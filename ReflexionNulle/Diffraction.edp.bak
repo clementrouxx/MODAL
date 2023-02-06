@@ -1,4 +1,4 @@
-real L=0.625, ell=1, h=1, eps =	0.13, d = 4; //parametres de la geometrie
+real L=0.625, ell=1, h=1, eps =	0.1, d = 4; //parametres de la geometrie
 int m=30; //nombre de mailles par element de longueur
 int maxSteps = 30; // Nombre maximal d'étapes dans la boucle
 real mu = 1e-4;
@@ -21,8 +21,12 @@ border b(t=0,1){x =d; y = -1+t; label = 2;} //DROIT : 2
 border hd(t=-d,-L){x =-t; y = 0; label = 3;} //bord du haut 1
 border hg(t=L,d){x =-t; y = 0; label = 3;} //bord du haut 3
 border i(t=0,1){x =-d; y = -t; label = 4;} //GAUCHE : 4
+/*
 func real h0(real t){
 	return sin(3.2*pi*(-t));
+}*/
+func real h0(real t){
+	return cos(3.2*pi*t) - 1;
 }
 func real h1(real t){
 	return -(2/pi)*sin(1.6*pi*(-t));
@@ -139,7 +143,7 @@ for (int icount=0; icount<maxSteps;icount++){
 	Rfile << R << endl;
 	Vh uReel=real(u);
 	Vh uImag=imag(u);
-	plot(uReel,fill=1,dim=2,nbiso=40,value=1,wait=0,cmm="Re u");
+	plot(uReel,fill=1,dim=2,nbiso=40,value=1,wait=0,cmm="Re u, |R| = "+abs(R)+", T = "+T+", Phase de T : "+atan(imag(T)/real(T)));
 
 	/***************************************
 	Modification de tau
@@ -149,7 +153,7 @@ for (int icount=0; icount<maxSteps;icount++){
 	tau(0) = tauPrec(0) - (1/eps)*real(R);
 	tau(1) = tauPrec(1) - (1/eps)*imag(R);
 	
-	cout << "Distance au carre entre les tau : " << sqrdist(tau,tauPrec) << " mu2 : " << mu^2 << endl;
+	cout << "Tau : " << tau;
 	
 	if (sqrdist(tau,tauPrec) < mu^2){
 		cout << "*********** Convergence terminee !! **************" << endl;

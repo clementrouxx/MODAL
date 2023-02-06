@@ -1,0 +1,315 @@
+-- FreeFem++ v4.11 (Thu, Apr 07, 2022  2:25:37 PM - git v4.11)
+   file : C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Diffraction.edp
+ Load: lg_fem lg_mesh lg_mesh3 eigenvalue
+    1 : real L=0.625, ell=1, h=1, eps = 0.1, d = 4; //parametres de la geometrie
+    2 : int m=30; //nombre de mailles par element de longueur
+    3 : int maxSteps = 30; // Nombre maximal d'étapes dans la boucle
+    4 : real mu = 1e-4;
+    5 :
+    6 : real [int] tau(2);
+    7 : real [int] tauPrec(2);// tau au tour précédent
+    8 : tau(0) = 0;
+    9 : tau(1) = 0;
+   10 :
+   11 : func real sqrdist(real [int] tau1, real [int] tau2){ // Distance euclidienne au carré dans R2
+   12 :         return ((tau1(0)-tau2(0))^2 + (tau1(1)-tau2(1))^2);
+   13 : }
+   14 :
+   15 : border a(t=-d,d){x =t; y = -1; label = 1;} //bord du bas
+   16 : // border b(t=0,h){x =-ell/2; y = -t; label = 1;}
+   17 : // border c(t=-ell/2,ell/2){x =t; y = -h; label = 1;}
+   18 : // border d(t=0,h){x =ell/2; y = -h+t; label = 1;}
+   19 : // border e(t=ell/2,L){x =t; y = 0; label = 1;}
+   20 : border b(t=0,1){x =d; y = -1+t; label = 2;} //DROIT : 2
+   21 : border hd(t=-d,-L){x =-t; y = 0; label = 3;} //bord du haut 1
+   22 : border hg(t=L,d){x =-t; y = 0; label = 3;} //bord du haut 3
+   23 : border i(t=0,1){x =-d; y = -t; label = 4;} //GAUCHE : 4
+   24 : /*
+   25 : func real h0(real t){
+   26 :         return sin(3.2*pi*(-t));
+   27 : }*/
+   28 : func real h0(real t){
+   29 :         return cos(3.2*pi*t) - 1;
+   30 : }
+   31 : func real h1(real t){
+   32 :         return -(2/pi)*sin(1.6*pi*(-t));
+   33 : }
+   34 : func real h2(real t){
+   35 :         return (2/pi)*(cos(1.6*pi*(-t))+1);
+   36 : }
+   37 :
+   38 : ofstream Rfile("R.txt");
+   39 : Rfile.precision(15);
+   40 :
+   41 : for (int icount=0; icount<maxSteps;icount++){
+   42 :
+   43 :         border pert(t=-L,L){x =-t; y = eps*(h0(t)+tau(0)*h1(t)+tau(1)*h2(t)); label = 3;} //bord du haut 2
+   44 :
+   45 :         // border Cercle(t=0,2*pi){ x=0.3*cos(t); y=0.5+0.3*sin(t); label = 1;}
+   46 :         //plot(a(2*d*m)+b(m)+hd(m*(d-L))+hg(m*(d-L))+pert(int(2*L)*m)+i(m), wait = true);
+   47 :         mesh Th=buildmesh(a(2*d*m)+b(m)+hd(m*(d-L))+hg(m*(d-L))+pert(3*L*m)+i(m));
+   48 :         //plot(Th,wait=1,cmm="Appuyer sur Enter pour poursuivre");
+   49 :
+   50 :         fespace Vh(Th,P2); // espace elements finis (ici fonctions continues P2 sur chaque triangle)s
+   51 :         real w=0.8*pi; // frequence de travail
+   52 :         func  uifonc=exp(1i*w*x);
+   53 :         func  uifoncConj=exp(-1i*w*x);
+   54 :
+   55 :         //DEBUT DE LA PARTIE A NE PAS MODIFIER
+   56 :         /*****************************************
+   57 :         Construction des Dirichlet-to-Neumann
+   58 :         ******************************************/
+   59 :         int nbfpro = 15; //troncature dans le Dirichlet-to-Neumann
+   60 :         //fonction de la base de fourier
+   61 :         func complex expin(real x1,real x2, int n)
+   62 :         {
+   63 :                 if (n==0)
+   64 :                 return 1.;
+   65 :                 else
+   66 :                 return (sqrt(2.)*cos(n*pi*x2));
+   67 :         }
+   68 :         /******************************************************
+   69 :         Dirichlet-to-Neumann à gauche
+   70 :         /*****************************************************/
+   71 :         complex[int,int] vDtNG( Vh.ndof, nbfpro);
+   72 :         matrix<complex> DtNG;
+   73 :         for (int n=0;n<nbfpro;n++)
+   74 :         {
+   75 :                 func f= expin(x,y,n);
+   76 :                 varf FiniFourier(u,v) = int1d(Th,4)(v*f); // integration sur le bord gauche
+   77 :                 complex[int] temp = FiniFourier(0,Vh);
+   78 :                 vDtNG(:,n)=temp;
+   79 :         }
+   80 :         DtNG=vDtNG;
+   81 :         // Construction de la matrice diagonale pour construire les EFL
+   82 :         matrix<complex> DG;
+   83 :         complex[int] diagofDG(nbfpro);
+   84 :         for (int n =0;n<nbfpro;n++)
+   85 :         {
+   86 :                 if (n==0)
+   87 :                 diagofDG[n] = -1i*w; // moins car dans la formu. varia., il y a un moins
+   88 :                 else
+   89 :                 diagofDG[n] = sqrt((n*pi)^2-w^2); // moins car dans la formu. varia., il y a un moins
+   90 :         }
+   91 :         DG = [diagofDG];
+   92 :         // Assemblage final et réorganisation pour intégration dans la formulation variationnelle
+   93 :         matrix<complex> EFLG ;
+   94 :         EFLG = DtNG*DG;
+   95 :         EFLG= EFLG*DtNG';
+   96 :
+   97 :         /******************************************************
+   98 :         Dirichlet-to-Neumann à droite
+   99 :         /*****************************************************/
+  100 :         complex[int,int] vDtND( Vh.ndof, nbfpro);
+  101 :         matrix<complex> DtND;
+  102 :         for (int n=0;n<nbfpro;n++)
+  103 :         {
+  104 :                 func f= expin(x,y,n);
+  105 :                 varf FiniFourier(u,v) = int1d(Th,2)(v*f); // integration sur le bord droit
+  106 :                 complex[int] temp = FiniFourier(0,Vh);
+  107 :                 vDtND(:,n)=temp;
+  108 :         }
+  109 :         DtND=vDtND;
+  110 :         matrix<complex> DD;
+  111 :         complex[int] diagofDD(nbfpro);
+  112 :         for (int n =0;n<nbfpro;n++)
+  113 :         {
+  114 :                 if (n==0)
+  115 :                 diagofDD[n] = -1i*w;
+  116 :                 else
+  117 :                 diagofDD[n] = sqrt((n*pi)^2-w^2);
+  118 :         }
+  119 :         DD = [diagofDD];
+  120 :         matrix<complex> EFLD ;
+  121 :         EFLD = DtND*DD;
+  122 :         EFLD= EFLD*DtND';
+  123 :         // FIN DE LA PARTIE A NE PAS MODIFIER
+  124 :
+  125 :         /***************************************
+  126 :         On passe à la formulation variationnelle
+  127 :         ****************************************/
+  128 :         Vh<complex> u,v,ui=uifonc;
+  129 :         matrix<complex> A,B,C;
+  130 :         complex[int] G(Vh.ndof);
+  131 :         cout << "ndof " << Vh.ndof << endl;
+  132 :         varf aForme(u,v) = int2d(Th)(dx(u)*dx(v)+dy(u)*dy(v))-int2d(Th)(w^2*u*v);
+  133 :         varf gForme(u,v) =  int1d(Th,4)(-2*1i*w*uifonc*v);
+  134 :         A= aForme(Vh,Vh);
+  135 :         C= A+EFLG+EFLD; //on rajoute les Dirichlet-to-Neumann
+  136 :         set(C,solver=UMFPACK);
+  137 :         G= gForme(0,Vh);
+  138 :         u[]=C^-1*G;
+  139 :         complex R = int1d(Th,4)((u-uifonc)*uifonc);
+  140 :         complex T = int1d(Th,2)(u*uifoncConj);
+  141 :         cout << "*************** R = " << R << " T = " << T << endl;
+  142 :         cout << "Conservation de l'energie : " << abs(R)^2 + abs(T)^2 << endl;
+  143 :         Rfile << R << endl;
+  144 :         Vh uReel=real(u);
+  145 :         Vh uImag=imag(u);
+  146 :         plot(uReel,fill=1,dim=2,nbiso=40,value=1,wait=0,cmm="Re u, |R| = "+abs(R)+", T = "+T+", Phase de T : "+atan(imag(T)/real(T)));
+  147 :
+  148 :         /***************************************
+  149 :         Modification de tau
+  150 :         ***************************************/
+  151 :
+  152 :         tauPrec = tau;
+  153 :         tau(0) = tauPrec(0) - (1/eps)*real(R);
+  154 :         tau(1) = tauPrec(1) - (1/eps)*imag(R);
+  155 :
+  156 :         cout << "Tau : " << tau(0) << ";" << tau(1) << endl;
+  157 :
+  158 :         if (sqrdist(tau,tauPrec) < mu^2){
+  159 :                 cout << "*********** Convergence terminee !! *************
+  ... : *" << endl;
+  160 :                 break;
+  161 :         }
+  162 : } // Fin de la boucle
+  163 :
+  164 : /***************************************
+  165 : Affichage de la solution en régime harmonique en temps
+  166 : ****************************************/
+  167 :
+  168 : /*
+  169 : real T=2*pi/w; //periode
+  170 : int nbIter=200;
+  171 : Vh uTemp;
+  172 : Vh uAbs=abs(u); //module
+  173 : real[int] viso(40); //5 lignes pour fixer l'echelle
+  174 : real ValMin=-uAbs[].max;
+  175 : real ValMax=uAbs[].max;
+  176 : for (int i=0;i<viso.n;i++)
+  177 : {viso[i]=ValMin+(ValMax-ValMin)*i/(viso.n-1);}
+  178 : for(real t=0;t<3*T;t+=3*T/nbIter)
+  179 : {uTemp=uReel*cos(w*t)+uImag*sin(w*t);
+  180 : plot(uTemp,fill=1,dim=2,viso=viso(0:viso.n-1),value=1,wait=0,cmm="Re (u(x,y)exp(-iwt))");}
+  181 : */
+  182 : /***************************************
+  183 : Portion de code pour ecrire dans un fichier
+  184 : ****************************************/
+  185 : complex [int] MesValeurs(3);
+  186 : ofstream f1("MonFichier.txt");
+  187 : int nold=f1.precision(15); // pour regler la precision
+  188 : for (int i=0;i<=1;i++)
+  189 : {f1 << MesValeurs(i) << endl;};
+  190 :
+  191 :
+  192 :  sizestack + 1024 =3972  ( 2948 )
+ 
+  --  mesh:  Nb of Triangles =  15642, Nb of Vertices 8101
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31843
+*************** R = (-0.00590089,0.0486278) T = (0.991526,0.120319)
+Conservation de l'energie : 1
+Tau : 0.0590089;-0.486278
+  --  mesh:  Nb of Triangles =  15888, Nb of Vertices 8224
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 32335
+*************** R = (0.00734013,0.0185852) T = (0.991352,0.129697)
+Conservation de l'energie : 1
+Tau : -0.0143924;-0.672129
+  --  mesh:  Nb of Triangles =  15448, Nb of Vertices 8004
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31455
+*************** R = (-0.00314519,0.00552002) T = (0.990866,0.134703)
+Conservation de l'energie : 1
+Tau : 0.0170595;-0.72733
+  --  mesh:  Nb of Triangles =  15434, Nb of Vertices 7997
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31427
+*************** R = (0.00245259,0.00283495) T = (0.990654,0.136344)
+Conservation de l'energie : 1
+Tau : -0.00746634;-0.755679
+  --  mesh:  Nb of Triangles =  15376, Nb of Vertices 7968
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31311
+*************** R = (-0.00132124,0.000549042) T = (0.990541,0.137208)
+Conservation de l'energie : 1
+Tau : 0.00574608;-0.76117
+  --  mesh:  Nb of Triangles =  15556, Nb of Vertices 8058
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31671
+*************** R = (0.000887129,0.00051327) T = (0.990518,0.137377)
+Conservation de l'energie : 1
+Tau : -0.00312521;-0.766302
+  --  mesh:  Nb of Triangles =  15452, Nb of Vertices 8006
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31463
+*************** R = (-0.000521149,-1.5701e-06) T = (0.990497,0.137536)
+Conservation de l'energie : 1
+Tau : 0.00208628;-0.766287
+  --  mesh:  Nb of Triangles =  15466, Nb of Vertices 8013
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31491
+*************** R = (0.000331472,0.000117796) T = (0.990497,0.137536)
+Conservation de l'energie : 1
+Tau : -0.00122844;-0.767465
+  --  mesh:  Nb of Triangles =  15454, Nb of Vertices 8007
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31467
+*************** R = (-0.000200817,-2.93885e-05) T = (0.990492,0.137572)
+Conservation de l'energie : 1
+Tau : 0.000779723;-0.767171
+  --  mesh:  Nb of Triangles =  15420, Nb of Vertices 7990
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31399
+*************** R = (0.0001254,3.42149e-05) T = (0.990493,0.137563)
+Conservation de l'energie : 1
+Tau : -0.00047428;-0.767513
+  --  mesh:  Nb of Triangles =  15452, Nb of Vertices 8006
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31463
+*************** R = (-7.70052e-05,-1.51944e-05) T = (0.990492,0.137574)
+Conservation de l'energie : 1
+Tau : 0.000295772;-0.767361
+  --  mesh:  Nb of Triangles =  15458, Nb of Vertices 8009
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31475
+*************** R = (4.76329e-05,1.15193e-05) T = (0.990492,0.137569)
+Conservation de l'energie : 1
+Tau : -0.000180557;-0.767476
+  --  mesh:  Nb of Triangles =  15438, Nb of Vertices 7999
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31435
+*************** R = (-2.9237e-05,-6.27477e-06) T = (0.990492,0.137573)
+Conservation de l'energie : 1
+Tau : 0.000111813;-0.767413
+  --  mesh:  Nb of Triangles =  15436, Nb of Vertices 7998
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31431
+*************** R = (1.81169e-05,4.1701e-06) T = (0.990492,0.137571)
+Conservation de l'energie : 1
+Tau : -6.93556e-05;-0.767455
+  --  mesh:  Nb of Triangles =  15520, Nb of Vertices 8040
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31599
+*************** R = (-1.12194e-05,-2.47946e-06) T = (0.990492,0.137572)
+Conservation de l'energie : 1
+Tau : 4.28381e-05;-0.76743
+  --  mesh:  Nb of Triangles =  15446, Nb of Vertices 8003
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31451
+*************** R = (6.86528e-06,1.57635e-06) T = (0.990492,0.137571)
+Conservation de l'energie : 1
+Tau : -2.58148e-05;-0.767446
+*********** Convergence terminee !! **************
+times: compile 0.162s, execution 9.417s,  mpirank:0
+ ######## We forget of deleting   214454 Nb pointer,   0Bytes  ,  mpirank 0, memory leak =0
+ CodeAlloc : nb ptr  4576,  size :534032 mpirank: 0
+Ok: Normal End
+ try getConsole C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Diffraction.edp

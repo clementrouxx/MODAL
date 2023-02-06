@@ -1,0 +1,743 @@
+-- FreeFem++ v4.11 (Thu, Apr 07, 2022  2:25:37 PM - git v4.11)
+   file : C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Cheminees.edp
+ Load: lg_fem lg_mesh lg_mesh3 eigenvalue
+    1 : real w=0.8*pi; // frequence de travail
+    2 : real l=pi/w, ell=1, h=1, d = 4; //parametres de la geometrie
+    3 :
+    4 : int m=30; //nombre de mailles par element de longueur
+    5 : int maxSteps = 30; // Nombre maximal d'étapes dans la boucle
+    6 : real mu = 1e-4;
+    7 :
+    8 : real [int] tau(2);
+    9 : real [int] tauPrec(2);// tau au tour précédent
+   10 : tau(0) = 0;
+   11 : tau(1) = 0;
+   12 :
+   13 : func real sqrdist(real [int] tau1, real [int] tau2){ // Distance euclidienne au carré dans R2
+   14 :         return ((tau1(0)-tau2(0))^2 + (tau1(1)-tau2(1))^2);
+   15 : }
+   16 :
+   17 : border a(t=-d,d){x =t; y = -1; label = 1;} //bord du bas
+   18 : border b(t=0,1){x =d; y = -1+t; label = 2;} //DROIT : 2
+   19 : border hd(t=d,l/2){x =t; y = 0; label = 3;} //bord du haut 3
+   20 : border hg(t=-l/2,-d){x =t; y = 0; label = 3;} //bord du haut 3
+   21 : border i(t=0,-1){x =-d; y = t; label = 4;} //GAUCHE : 4
+   22 :
+   23 :
+   24 : ofstream Rfile("Cheminees.csv");
+   25 : Rfile.precision(15);
+   26 :
+   27 : Rfile << "L;ReR;ImR;ReT;ImT" << endl;
+   28 :
+   29 : for (real L=0.05;L<=3;L+=0.03){
+   30 :
+   31 :         border chemG(t=L,0){x=-l/2;y=t;label=3;}
+   32 :         border chemH(t=-l/2,l/2){x =-t; y = L; label = 3;}
+   33 :         border chemD(t=0,L){x=l/2;y=t;label=3;}
+   34 :
+   35 :         // border Cercle(t=0,2*pi){ x=0.3*cos(t); y=0.5+0.3*sin(t); label = 1;}
+   36 :         //plot(a(2*d*m)+b(m)+hd(m*(d-L))+chemD(m*L)+chemH(m*l)+chemG(m*L)+hg(m*(d-L))+i(m), wait = true);
+   37 :         mesh Th=buildmesh(a(2*d*m)+b(m)+hd(m*(d-l/2))+chemD(m*L)+chemH(m*l)+chemG(m*L)+hg(m*(d-l/2))+i(m));
+   38 :         //plot(Th,wait=1,cmm="Appuyer sur Enter pour poursuivre");
+   39 :
+   40 :         fespace Vh(Th,P2); // espace elements finis (ici fonctions continues P2 sur chaque triangle)s
+   41 :
+   42 :         func  uifonc=exp(1i*w*x);
+   43 :         func  uifoncConj=exp(-1i*w*x);
+   44 :
+   45 :         //DEBUT DE LA PARTIE A NE PAS MODIFIER
+   46 :         /*****************************************
+   47 :         Construction des Dirichlet-to-Neumann
+   48 :         ******************************************/
+   49 :         int nbfpro = 15; //troncature dans le Dirichlet-to-Neumann
+   50 :         //fonction de la base de fourier
+   51 :         func complex expin(real x1,real x2, int n)
+   52 :         {
+   53 :                 if (n==0)
+   54 :                 return 1.;
+   55 :                 else
+   56 :                 return (sqrt(2.)*cos(n*pi*x2));
+   57 :         }
+   58 :         /******************************************************
+   59 :         Dirichlet-to-Neumann à gauche
+   60 :         /*****************************************************/
+   61 :         complex[int,int] vDtNG( Vh.ndof, nbfpro);
+   62 :         matrix<complex> DtNG;
+   63 :         for (int n=0;n<nbfpro;n++)
+   64 :         {
+   65 :                 func f= expin(x,y,n);
+   66 :                 varf FiniFourier(u,v) = int1d(Th,4)(v*f); // integration sur le bord gauche
+   67 :                 complex[int] temp = FiniFourier(0,Vh);
+   68 :                 vDtNG(:,n)=temp;
+   69 :         }
+   70 :         DtNG=vDtNG;
+   71 :         // Construction de la matrice diagonale pour construire les EFL
+   72 :         matrix<complex> DG;
+   73 :         complex[int] diagofDG(nbfpro);
+   74 :         for (int n =0;n<nbfpro;n++)
+   75 :         {
+   76 :                 if (n==0)
+   77 :                 diagofDG[n] = -1i*w; // moins car dans la formu. varia., il y a un moins
+   78 :                 else
+   79 :                 diagofDG[n] = sqrt((n*pi)^2-w^2); // moins car dans la formu. varia., il y a un moins
+   80 :         }
+   81 :         DG = [diagofDG];
+   82 :         // Assemblage final et réorganisation pour intégration dans la formulation variationnelle
+   83 :         matrix<complex> EFLG ;
+   84 :         EFLG = DtNG*DG;
+   85 :         EFLG= EFLG*DtNG';
+   86 :
+   87 :         /******************************************************
+   88 :         Dirichlet-to-Neumann à droite
+   89 :         /*****************************************************/
+   90 :         complex[int,int] vDtND( Vh.ndof, nbfpro);
+   91 :         matrix<complex> DtND;
+   92 :         for (int n=0;n<nbfpro;n++)
+   93 :         {
+   94 :                 func f= expin(x,y,n);
+   95 :                 varf FiniFourier(u,v) = int1d(Th,2)(v*f); // integration sur le bord droit
+   96 :                 complex[int] temp = FiniFourier(0,Vh);
+   97 :                 vDtND(:,n)=temp;
+   98 :         }
+   99 :         DtND=vDtND;
+  100 :         matrix<complex> DD;
+  101 :         complex[int] diagofDD(nbfpro);
+  102 :         for (int n =0;n<nbfpro;n++)
+  103 :         {
+  104 :                 if (n==0)
+  105 :                 diagofDD[n] = -1i*w;
+  106 :                 else
+  107 :                 diagofDD[n] = sqrt((n*pi)^2-w^2);
+  108 :         }
+  109 :         DD = [diagofDD];
+  110 :         matrix<complex> EFLD ;
+  111 :         EFLD = DtND*DD;
+  112 :         EFLD= EFLD*DtND';
+  113 :         // FIN DE LA PARTIE A NE PAS MODIFIER
+  114 :
+  115 :         /***************************************
+  116 :         On passe à la formulation variationnelle
+  117 :         ****************************************/
+  118 :         Vh<complex> u,v,ui=uifonc;
+  119 :         matrix<complex> A,B,C;
+  120 :         complex[int] G(Vh.ndof);
+  121 :         cout << "ndof " << Vh.ndof << endl;
+  122 :         varf aForme(u,v) = int2d(Th)(dx(u)*dx(v)+dy(u)*dy(v))-int2d(Th)(w^2*u*v);
+  123 :         varf gForme(u,v) =  int1d(Th,4)(-2*1i*w*uifonc*v);
+  124 :         A= aForme(Vh,Vh);
+  125 :         C= A+EFLG+EFLD; //on rajoute les Dirichlet-to-Neumann
+  126 :         set(C,solver=UMFPACK);
+  127 :         G= gForme(0,Vh);
+  128 :         u[]=C^-1*G;
+  129 :         complex R = int1d(Th,4)((u-uifonc)*uifonc);
+  130 :         complex T = int1d(Th,2)(u*uifoncConj);
+  131 :         cout << "*************** R = " << R << " T = " << T << endl;
+  132 :         cout << "Conservation de l'energie : " << abs(R)^2 + abs(T)^2 << endl;
+  133 :         Rfile << L << ";" << real(R) << ";" << imag(R) << ";" << real(T) << ";" << imag(T) << endl;
+  134 :         Vh uReel=real(u);
+  135 :         Vh uImag=imag(u);
+  136 :         plot(uReel,fill=1,dim=2,nbiso=40,value=1,wait=0,cmm="Re u, |R| = "+abs(R)+", T = "+T+", Phase de T : "+a�2�tan(imag(T)/real(T)));
+  137 : } // Fin de la boucle
+  138 :
+  139 :
+  140 :  sizestack + 1024 =3664  ( 2640 )
+ 
+  --  mesh:  Nb of Triangles =  14923, Nb of Vertices 7733
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 30388
+*************** R = (-9.99331e-05,0.00999652) T = (0.9999,0.00999592)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15155, Nb of Vertices 7850
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 30854
+*************** R = (-0.000583983,0.0241593) T = (0.999416,0.0241587)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15447, Nb of Vertices 7997
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31440
+*************** R = (-0.0019835,0.0444927) T = (0.998016,0.0444921)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15489, Nb of Vertices 8019
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31526
+*************** R = (-0.00523527,0.0721658) T = (0.994765,0.0721652)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15517, Nb of Vertices 8034
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31584
+*************** R = (-0.0120916,0.109295) T = (0.987908,0.109295)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15787, Nb of Vertices 8170
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 32126
+*************** R = (-0.0260871,0.159395) T = (0.973913,0.159394)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15721, Nb of Vertices 8137
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31994
+*************** R = (-0.0549032,0.227792) T = (0.945097,0.227791)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15645, Nb of Vertices 8100
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 31844
+*************** R = (-0.116968,0.321382) T = (0.883032,0.321381)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16079, Nb of Vertices 8318
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 32714
+*************** R = (-0.257002,0.436981) T = (0.742998,0.43698)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  15813, Nb of Vertices 8186
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 32184
+*************** R = (-0.560973,0.496269) T = (0.439027,0.496268)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16043, Nb of Vertices 8302
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 32646
+*************** R = (-0.950226,0.217478) T = (0.0497742,0.217478)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16169, Nb of Vertices 8366
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 32900
+*************** R = (-0.910202,-0.285892) T = (0.0897982,-0.285893)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16227, Nb of Vertices 8396
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 33018
+*************** R = (-0.625057,-0.484108) T = (0.374943,-0.484108)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16379, Nb of Vertices 8473
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 33324
+*************** R = (-0.420683,-0.493668) T = (0.579317,-0.493669)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16593, Nb of Vertices 8581
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 33754
+*************** R = (-0.300423,-0.458442) T = (0.699577,-0.458442)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16561, Nb of Vertices 8566
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 33692
+*************** R = (-0.227453,-0.419187) T = (0.772547,-0.419188)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16819, Nb of Vertices 8695
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 34208
+*************** R = (-0.180265,-0.384408) T = (0.819735,-0.384408)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17111, Nb of Vertices 8842
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 34794
+*************** R = (-0.147839,-0.35494) T = (0.852161,-0.35494)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16841, Nb of Vertices 8708
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 34256
+*************** R = (-0.124394,-0.33003) T = (0.875606,-0.330031)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16907, Nb of Vertices 8742
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 34390
+*************** R = (-0.106712,-0.308746) T = (0.893288,-0.308747)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16787, Nb of Vertices 8683
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 34152
+*************** R = (-0.0929007,-0.290293) T = (0.907099,-0.290294)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17667, Nb of Vertices 9124
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35914
+*************** R = (-0.0817898,-0.274044) T = (0.91821,-0.274045)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  16981, Nb of Vertices 8782
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 34544
+*************** R = (-0.0726239,-0.259518) T = (0.927376,-0.259518)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17201, Nb of Vertices 8893
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 34986
+*************** R = (-0.0648969,-0.246343) T = (0.935103,-0.246344)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17211, Nb of Vertices 8899
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35008
+*************** R = (-0.0582572,-0.234229) T = (0.941743,-0.234229)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17401, Nb of Vertices 8995
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35390
+*************** R = (-0.0524571,-0.222947) T = (0.947543,-0.222947)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17287, Nb of Vertices 8938
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35162
+*************** R = (-0.0473156,-0.212313) T = (0.952684,-0.212313)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17403, Nb of Vertices 8997
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35396
+*************** R = (-0.0426925,-0.202163) T = (0.957307,-0.202163)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17567, Nb of Vertices 9080
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35726
+*************** R = (-0.0384876,-0.19237) T = (0.961512,-0.192371)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17429, Nb of Vertices 9012
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35452
+*************** R = (-0.0346204,-0.182816) T = (0.96538,-0.182817)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17779, Nb of Vertices 9188
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 36154
+*************** R = (-0.031026,-0.173388) T = (0.968974,-0.173388)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17571, Nb of Vertices 9085
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 35740
+*************** R = (-0.0276598,-0.163996) T = (0.97234,-0.163996)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18723, Nb of Vertices 9662
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 38046
+*************** R = (-0.0244765,-0.154523) T = (0.975524,-0.154523)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17961, Nb of Vertices 9282
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 36524
+*************** R = (-0.021453,-0.144888) T = (0.978547,-0.144889)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17819, Nb of Vertices 9212
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 36242
+*************** R = (-0.018558,-0.134958) T = (0.981442,-0.134958)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18627, Nb of Vertices 9617
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 37860
+*************** R = (-0.015778,-0.124615) T = (0.984222,-0.124616)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  17949, Nb of Vertices 9278
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 36504
+*************** R = (-0.0131039,-0.113719) T = (0.986896,-0.11372)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18177, Nb of Vertices 9393
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 36962
+*************** R = (-0.0105294,-0.102071) T = (0.989471,-0.102072)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18277, Nb of Vertices 9444
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 37164
+*************** R = (-0.00807939,-0.0895212) T = (0.991921,-0.089522)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18273, Nb of Vertices 9443
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 37158
+*************** R = (-0.00576951,-0.0757375) T = (0.99423,-0.0757382)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18617, Nb of Vertices 9616
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 37848
+*************** R = (-0.00366249,-0.0604072) T = (0.996338,-0.060408)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18469, Nb of Vertices 9543
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 37554
+*************** R = (-0.00185766,-0.0430602) T = (0.998142,-0.0430609)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18437, Nb of Vertices 9528
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 37492
+*************** R = (-0.000532342,-0.023066) T = (0.999468,-0.0230667)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19225, Nb of Vertices 9923
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 39070
+*************** R = (-1.93253e-07,0.000449269) T = (1,0.000448569)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19435, Nb of Vertices 10029
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 39492
+*************** R = (-0.000826779,0.0287421) T = (0.999173,0.0287414)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18915, Nb of Vertices 9770
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 38454
+*************** R = (-0.0040784,0.0637323) T = (0.995922,0.0637316)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18619, Nb of Vertices 9622
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 37862
+*************** R = (-0.0118564,0.10824) T = (0.988144,0.108239)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19065, Nb of Vertices 9846
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 38756
+*************** R = (-0.0285995,0.166678) T = (0.9714,0.166678)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19417, Nb of Vertices 10023
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 39462
+*************** R = (-0.06438,0.245429) T = (0.93562,0.245428)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19109, Nb of Vertices 9870
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 38848
+*************** R = (-0.143793,0.35088) T = (0.856207,0.35088)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  18943, Nb of Vertices 9788
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 38518
+*************** R = (-0.326568,0.468958) T = (0.673432,0.468957)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20369, Nb of Vertices 10502
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41372
+*************** R = (-0.695138,0.460349) T = (0.304862,0.460349)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20663, Nb of Vertices 10650
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41962
+*************** R = (-0.998362,0.0404445) T = (0.00163841,0.0404438)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20725, Nb of Vertices 10682
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 42088
+*************** R = (-0.816179,-0.387338) T = (0.183821,-0.387339)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19445, Nb of Vertices 10043
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 39530
+*************** R = (-0.545222,-0.49795) T = (0.454778,-0.497951)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19679, Nb of Vertices 10161
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 40000
+*************** R = (-0.3734,-0.483707) T = (0.6266,-0.483707)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19857, Nb of Vertices 10250
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 40356
+*************** R = (-0.272283,-0.445135) T = (0.727717,-0.445135)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19477, Nb of Vertices 10061
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 39598
+*************** R = (-0.209656,-0.407063) T = (0.790344,-0.407063)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19651, Nb of Vertices 10149
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 39948
+*************** R = (-0.168271,-0.374106) T = (0.831729,-0.374107)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19571, Nb of Vertices 10110
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 39790
+*************** R = (-0.139307,-0.346266) T = (0.860693,-0.346267)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19895, Nb of Vertices 10273
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 40440
+*************** R = (-0.118044,-0.32266) T = (0.881956,-0.322661)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  19741, Nb of Vertices 10197
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 40134
+*************** R = (-0.101805,-0.302392) T = (0.898195,-0.302392)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20793, Nb of Vertices 10724
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 42240
+*************** R = (-0.0889869,-0.284724) T = (0.911013,-0.284725)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20013, Nb of Vertices 10335
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 40682
+*************** R = (-0.0785838,-0.269088) T = (0.921416,-0.269088)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21521, Nb of Vertices 11090
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43700
+*************** R = (-0.0699353,-0.255038) T = (0.930065,-0.255038)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20405, Nb of Vertices 10533
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41470
+*************** R = (-0.0625984,-0.242239) T = (0.937402,-0.24224)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20329, Nb of Vertices 10495
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41318
+*************** R = (-0.0562589,-0.230421) T = (0.943741,-0.230421)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20171, Nb of Vertices 10417
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41004
+*************** R = (-0.0506908,-0.219365) T = (0.949309,-0.219366)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20437, Nb of Vertices 10551
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41538
+*************** R = (-0.0457315,-0.208902) T = (0.954268,-0.208903)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20321, Nb of Vertices 10494
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41308
+*************** R = (-0.0412563,-0.198882) T = (0.958744,-0.198883)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21277, Nb of Vertices 10973
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43222
+*************** R = (-0.0371701,-0.189178) T = (0.96283,-0.189179)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21717, Nb of Vertices 11194
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 44104
+*************** R = (-0.0333964,-0.179669) T = (0.966604,-0.17967)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21029, Nb of Vertices 10851
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 42730
+*************** R = (-0.0298853,-0.17027) T = (0.970115,-0.170271)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20585, Nb of Vertices 10630
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41844
+*************** R = (-0.0265831,-0.160861) T = (0.973417,-0.160862)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20677, Nb of Vertices 10677
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 42030
+*************** R = (-0.0234564,-0.151348) T = (0.976544,-0.151348)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20645, Nb of Vertices 10661
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 41966
+*************** R = (-0.0204747,-0.141617) T = (0.979525,-0.141618)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21351, Nb of Vertices 11015
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43380
+*************** R = (-0.0176207,-0.131568) T = (0.982379,-0.131569)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21593, Nb of Vertices 11137
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43866
+*************** R = (-0.0148766,-0.121059) T = (0.985123,-0.121059)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20957, Nb of Vertices 10820
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 42596
+*************** R = (-0.0122329,-0.109924) T = (0.987767,-0.109924)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  20977, Nb of Vertices 10831
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 42638
+*************** R = (-0.00970157,-0.0980172) T = (0.990298,-0.098018)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  22477, Nb of Vertices 11582
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 45640
+*************** R = (-0.0072912,-0.0850763) T = (0.992709,-0.0850771)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21207, Nb of Vertices 10948
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43102
+*************** R = (-0.00504123,-0.070822) T = (0.994959,-0.0708229)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  22367, Nb of Vertices 11529
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 45424
+*************** R = (-0.00302129,-0.0548828) T = (0.996979,-0.0548836)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21255, Nb of Vertices 10974
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43202
+*************** R = (-0.00135067,-0.0367262) T = (0.998649,-0.0367271)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21397, Nb of Vertices 11046
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43488
+*************** R = (-0.000245773,-0.0156748) T = (0.999754,-0.0156756)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21329, Nb of Vertices 11012
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43352
+*************** R = (-8.58903e-05,0.00926813) T = (0.999914,0.00926726)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  22887, Nb of Vertices 11792
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 46470
+*************** R = (-0.00156631,0.039546) T = (0.998434,0.0395452)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21499, Nb of Vertices 11099
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 43696
+*************** R = (-0.00602363,0.0773784) T = (0.993976,0.0773775)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  23299, Nb of Vertices 12000
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 47298
+*************** R = (-0.0161085,0.125893) T = (0.983892,0.125892)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  23345, Nb of Vertices 12024
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 47392
+*************** R = (-0.0376372,0.190318) T = (0.962363,0.190317)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21817, Nb of Vertices 11261
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 44338
+*************** R = (-0.0840604,0.277479) T = (0.91594,0.277478)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  23571, Nb of Vertices 12139
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 47848
+*************** R = (-0.188709,0.391278) T = (0.811291,0.391277)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  21877, Nb of Vertices 11293
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 44462
+*************** R = (-0.427428,0.494706) T = (0.572572,0.494705)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  22115, Nb of Vertices 11413
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 44940
+*************** R = (-0.837279,0.369112) T = (0.162721,0.369111)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  23065, Nb of Vertices 11889
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 46842
+*************** R = (-0.980466,-0.138393) T = (0.0195343,-0.138394)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  22169, Nb of Vertices 11441
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 45050
+*************** R = (-0.717037,-0.450438) T = (0.282963,-0.450439)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  23255, Nb of Vertices 11985
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 47224
+*************** R = (-0.477434,-0.49949) T = (0.522566,-0.499491)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  22287, Nb of Vertices 11502
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 45290
+*************** R = (-0.333799,-0.471569) T = (0.666201,-0.47157)
+Conservation de l'energie : 1
+  --  mesh:  Nb of Triangles =  22291, Nb of Vertices 11505
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 45300
+*************** R = (-0.248226,-0.431983) T = (0.751774,-0.431984)
+Conservation de l'energie : 1
+times: compile 0.255s, execution 115.95s,  mpirank:0
+ ######## We forget of deleting   1192519 Nb pointer,   0Bytes  ,  mpirank 0, memory leak =0
+ CodeAlloc : nb ptr  4518,  size :532664 mpirank: 0
+Ok: Normal End
+ try getConsole C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Cheminees.edp

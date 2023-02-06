@@ -1,0 +1,202 @@
+-- FreeFem++ v4.11 (Thu, Apr 07, 2022  2:25:37 PM - git v4.11)
+   file : C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Base\base.edp
+ Load: lg_fem lg_mesh lg_mesh3 eigenvalue
+    1 : load "iovtk"(load: loadLibary C:\Program Files (x86)\FreeFem++\\.\iovtk = 0) load: iovtk
+;
+    2 : int[int] fforder=[1];
+    3 :
+    4 :
+    5 : real w=0.8*pi; // frequence de travail
+    6 : real l=pi/w, ell=1, h=1, d = 4; //parametres de la geometrie
+    7 :
+    8 : int m=30; //nombre de mailles par element de longueur
+    9 : int maxSteps = 30; // Nombre maximal d'étapes dans la boucle
+   10 :
+   11 :
+   12 : border a(t=-d,d){x =t; y = -1; label = 1;} //bord du bas
+   13 : border b(t=0,1){x =d; y = -1+t; label = 2;} //DROIT : 2
+   14 : border hd(t=-d,d){x =-t; y = 0; label = 3;} //bord du haut 3
+   15 : border i(t=0,-1){x =-d; y = t; label = 4;} //GAUCHE : 4
+   16 :
+   17 :
+   18 :
+   19 : // border Cercle(t=0,2*pi){ x=0.3*cos(t); y=0.5+0.3*sin(t); label = 1;}
+   20 : //plot(a(2*d*m)+b(m)+hd(m*(d-L))+chemD(m*L)+chemH(m*l)+chemG(m*L)+hg(m*(d-L))+i(m), wait = true);
+   21 : mesh Th=buildmesh(a(2*d*m)+b(m)+hd(m*d)+i(m));
+   22 : //plot(Th,wait=1,cmm="Appuyer sur Enter pour poursuivre");
+   23 :
+   24 : fespace Vh(Th,P2); // espace elements finis (ici fonctions continues P2 sur chaque triangle)s
+   25 :
+   26 : func  uifonc=exp(1i*w*x);
+   27 : func  uifoncConj=exp(-1i*w*x);
+   28 :
+   29 : //DEBUT DE LA PARTIE A NE PAS MODIFIER
+   30 : /*****************************************
+   31 : Construction des Dirichlet-to-Neumann
+   32 : ******************************************/
+   33 : int nbfpro = 15; //troncature dans le Dirichlet-to-Neumann
+   34 : //fonction de la base de fourier
+   35 : func complex expin(real x1,real x2, int n)
+   36 : {
+   37 :         if (n==0)
+   38 :         return 1.;
+   39 :         else
+   40 :         return (sqrt(2.)*cos(n*pi*x2));
+   41 : }
+   42 : /******************************************************
+   43 : Dirichlet-to-Neumann à gauche
+   44 : /*****************************************************/
+   45 : complex[int,int] vDtNG( Vh.ndof, nbfpro);
+   46 : matrix<complex> DtNG;
+   47 : for (int n=0;n<nbfpro;n++)
+   48 : {
+   49 :         func f= expin(x,y,n);
+   50 :         varf FiniFourier(u,v) = int1d(Th,4)(v*f); // integration sur le bord gauche
+   51 :         complex[int] temp = FiniFourier(0,Vh);
+   52 :         vDtNG(:,n)=temp;
+   53 : }
+   54 : DtNG=vDtNG;
+   55 : // Construction de la matrice diagonale pour construire les EFL
+   56 : matrix<complex> DG;
+   57 : complex[int] diagofDG(nbfpro);
+   58 : for (int n =0;n<nbfpro;n++)
+   59 : {
+   60 :         if (n==0)
+   61 :         diagofDG[n] = -1i*w; // moins car dans la formu. varia., il y a un moins
+   62 :         else
+   63 :         diagofDG[n] = sqrt((n*pi)^2-w^2); // moins car dans la formu. varia., il y a un moins
+   64 : }
+   65 : DG = [diagofDG];
+   66 : // Assemblage final et réorganisation pour intégration dans la formulation variationnelle
+   67 : matrix<complex> EFLG ;
+   68 : EFLG = DtNG*DG;
+   69 : EFLG= EFLG*DtNG';
+   70 :
+   71 : /******************************************************
+   72 : Dirichlet-to-Neumann à droite
+   73 : /*****************************************************/
+   74 : complex[int,int] vDtND( Vh.ndof, nbfpro);
+   75 : matrix<complex> DtND;
+   76 : for (int n=0;n<nbfpro;n++)
+   77 : {
+   78 :         func f= expin(x,y,n);
+   79 :         varf FiniFourier(u,v) = int1d(Th,2)(v*f); // integration sur le bord droit
+   80 :         complex[int] temp = FiniFourier(0,Vh);
+   81 :         vDtND(:,n)=temp;
+   82 : }
+   83 : DtND=vDtND;
+   84 : matrix<complex> DD;
+   85 : complex[int] diagofDD(nbfpro);
+   86 : for (int n =0;n<nbfpro;n++)
+   87 : {
+   88 :         if (n==0)
+   89 :         diagofDD[n] = -1i*w;
+   90 :         else
+   91 :         diagofDD[n] = sqrt((n*pi)^2-w^2);
+   92 : }
+   93 : DD = [diagofDD];
+   94 : matrix<complex> EFLD ;
+   95 : EFLD = DtND*DD;
+   96 : EFLD= EFLD*DtND';
+   97 : // FIN DE LA PARTIE A NE PAS MODIFIER
+   98 :
+   99 : /***************************************
+  100 : On passe à la formulation variationnelle
+  101 : ****************************************/
+  102 : Vh<complex> u,v,ui=uifonc;
+  103 : matrix<complex> A,B,C;
+  104 : complex[int] G(Vh.ndof);
+  105 : cout << "ndof " << Vh.ndof << endl;
+  106 : varf aForme(u,v) = int2d(Th)(dx(u)*dx(v)+dy(u)*dy(v))-int2d(Th)(w^2*u*v);
+  107 : varf gForme(u,v) =  int1d(Th,4)(-2*1i*w*uifonc*v);
+  108 : A= aForme(Vh,Vh);
+  109 : C= A+EFLG+EFLD; //on rajoute les Dirichlet-to-Neumann
+  110 : set(C,solver=UMFPACK);
+  111 : G= gForme(0,Vh);
+  112 : u[]=C^-1*G;
+  113 : complex R = int1d(Th,4)((u-uifonc)*uifonc);
+  114 : complex T = int1d(Th,2)(u*uifoncConj);
+  115 :
+  116 : Vh uReel=real(u);
+  117 : Vh uImag=imag(u);
+  118 : //plot(uReel,fill=1,dim=2,nbiso=40,value=1,wait=0,cmm="Re u, |R| = "+abs(R)+", T = "+T+", Phase de T : "+atan(imfag(T)/real(T)));
+  119 :
+  120 : Vh uiReel = real(ui);
+  121 : Vh uiImag = imag(ui);
+  122 :
+  123 :
+  124 : // Génération de vidéo
+  125 : Vh solApprochTempo;
+  126 : Vh solApprochTempoInc;
+  127 : real Tper=2*pi/w;
+  128 : int nbIter=25;
+  129 : int j=0;
+  130 : int numImage;
+  131 : for(real t=0;t<Tper;t+=Tper/nbIter){
+  132 :         numImage=1000000+j;
+  133 :         solApprochTempo=uReel*cos(w*t)+uImag*sin(w*t);
+  134 :         solApprochTempoInc=uiReel*cos(w*t)+uiImag*sin(w*t);
+  135 :         savevtk("dataVTK/image"+numImage+".vtk",Th,solApprochTempo,order=fforder,dataname="solution");
+  136 :         savevtk("dataVTKinc/image"+numImage+".vtk",Th,solApprochTempoInc,order=fforder,dataname="solution");
+  137 :         j++;
+  138 : } sizestack + 1024 =5336  ( 4312 )
+ 
+  --  mesh:  Nb of Triangles =   8030, Nb of Vertices 4226
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 16481
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7180 VTK_FILE 1
+ 0x2287cda70f0 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda70f0 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda70f0 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda70f0 VTK_FILE 1
+ 0x2287cda7180 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7180 VTK_FILE 1
+ 0x2287cda70f0 VTK_FILE 1
+ 0x2287cda70f0 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda77e0 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda73f0 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7180 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7180 VTK_FILE 1
+ 0x2287cda73f0 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7180 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7390 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+ 0x2287cda7240 VTK_FILE 1
+times: compile 0.171s, execution 1.533s,  mpirank:0
+ ######## We forget of deleting   12637 Nb pointer,   0Bytes  ,  mpirank 0, memory leak =0
+ CodeAlloc : nb ptr  4379,  size :528664 mpirank: 0
+Ok: Normal End
+ try getConsole C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Base\base.edp

@@ -1,0 +1,189 @@
+-- FreeFem++ v4.11 (Thu, Apr 07, 2022  2:25:37 PM - git v4.11)
+   file : C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Obstacle.edp
+ Load: lg_fem lg_mesh lg_mesh3 eigenvalue
+    1 : real L=0.625, ell=1, h=1, eps = 0.1, d = 4; //parametres de la geometrie
+    2 : int m=30; //nombre de mailles par element de longueur
+    3 : int maxSteps = 30; // Nombre maximal d'étapes dans la boucle
+    4 : real mu = 1e-4;
+    5 :
+    6 : real [int] tau(2);
+    7 : real [int] tauPrec(2);// tau au tour précédent
+    8 : tau(0) = -2.58148e-05;
+    9 : tau(1) = -0.767446;
+   10 :
+   11 : func real sqrdist(real [int] tau1, real [int] tau2){ // Distance euclidienne au carré dans R2
+   12 :         return ((tau1(0)-tau2(0))^2 + (tau1(1)-tau2(1))^2);
+   13 : }
+   14 :
+   15 : border a(t=-d,d){x =t; y = -2; label = 1;} // BAS
+   16 : border b(t=0,2){x =d; y = -2+t; label = 2;} //DROIT : 2
+   17 : border haut(t=-d,d){x =-t; y = 0; label = 1;} // HAUT
+   18 : border i(t=0,2){x =-d; y = -t; label = 4;} //GAUCHE : 4
+   19 :
+   20 : /*
+   21 : func real h0(real t){
+   22 :         return sin(3.2*pi*(-t));
+   23 : }*/
+   24 : func real h0(real t){
+   25 :         return cos(3.2*pi*t) - 1;
+   26 : }
+   27 : func real h1(real t){
+   28 :         return -(2/pi)*sin(1.6*pi*(-t));
+   29 : }
+   30 : func real h2(real t){
+   31 :         return (2/pi)*(cos(1.6*pi*(-t))+1);
+   32 : }
+   33 :
+   34 : ofstream Rfile("R.txt");
+   35 : Rfile.precision(15);
+   36 :
+   37 :
+   38 : border pertHaut(t=-L,L){x =-t; y = -1+eps*(h0(t)+tau(0)*h1(t)+tau(1)*h2(t)); label = 3;}
+   39 : border pertBas(t=L,-L){x =-t; y = -1-eps*(h0(t)+tau(0)*h1(t)+tau(1)*h2(t)); label = 3;}
+   40 :
+   41 : // border Cercle(t=0,2*pi){ x=0.3*cos(t); y=0.5+0.3*sin(t); label = 1;}
+   42 : //plot(a(2*d*m)+b(m)+hd(m*(d-L))+hg(m*(d-L))+pert(int(2*L)*m)+i(m), wait = true);
+   43 : mesh Th=buildmesh(a(2*d*m)+b(2*m)+haut(m*d)+i(2*m)+pertHaut(3*L*m)+pertBas(3*L*m));
+   44 : //plot(Th,wait=1,cmm="Appuyer sur Enter pour poursuivre");
+   45 :
+   46 : fespace Vh(Th,P2); // espace elements finis (ici fonctions continues P2 sur chaque triangle)s
+   47 : real w=0.8*pi; // frequence de travail
+   48 : func  uifonc=exp(1i*w*x);
+   49 : func  uifoncConj=exp(-1i*w*x);
+   50 :
+   51 : //DEBUT DE LA PARTIE A NE PAS MODIFIER
+   52 : /*****************************************
+   53 : Construction des Dirichlet-to-Neumann
+   54 : ******************************************/
+   55 : int nbfpro = 15; //troncature dans le Dirichlet-to-Neumann
+   56 : //fonction de la base de fourier
+   57 : func complex expin(real x1,real x2, int n)
+   58 : {
+   59 :         if (n==0)
+   60 :         return 1/sqrt(2.);
+   61 :         else
+   62 :         return (cos(n*pi*x2/2));
+   63 : }
+   64 : /******************************************************
+   65 : Dirichlet-to-Neumann à gauche
+   66 : /*****************************************************/
+   67 : complex[int,int] vDtNG( Vh.ndof, nbfpro);
+   68 : matrix<complex> DtNG;
+   69 : for (int n=0;n<nbfpro;n++)
+   70 : {
+   71 :         func f= expin(x,y,n);
+   72 :         varf FiniFourier(u,v) = int1d(Th,4)(v*f); // integration sur le bord gauche
+   73 :         complex[int] temp = FiniFourier(0,Vh);
+   74 :         vDtNG(:,n)=temp;
+   75 : }
+   76 : DtNG=vDtNG;
+   77 : // Construction de la matrice diagonale pour construire les EFL
+   78 : matrix<complex> DG;
+   79 : complex[int] diagofDG(nbfpro);
+   80 : for (int n =0;n<nbfpro;n++)
+   81 : {
+   82 :         if (n==0)
+   83 :         diagofDG[n] = -1i*w; // moins car dans la formu. varia., il y a un moins
+   84 :         else
+   85 :         diagofDG[n] = sqrt((n*pi)^2-w^2); // moins car dans la formu. varia., il y a un moins
+   86 : }
+   87 : DG = [diagofDG];
+   88 : // Assemblage final et réorganisation pour intégration dans la formulation variationnelle
+   89 : matrix<complex> EFLG ;
+   90 : EFLG = DtNG*DG;
+   91 : EFLG= EFLG*DtNG';
+   92 :
+   93 : /******************************************************
+   94 : Dirichlet-to-Neumann à droite
+   95 : /*****************************************************/
+   96 : complex[int,int] vDtND( Vh.ndof, nbfpro);
+   97 : matrix<complex> DtND;
+   98 : for (int n=0;n<nbfpro;n++)
+   99 : {
+  100 :         func f= expin(x,y,n);
+  101 :         varf FiniFourier(u,v) = int1d(Th,2)(v*f); // integration sur le bord droit
+  102 :         complex[int] temp = FiniFourier(0,Vh);
+  103 :         vDtND(:,n)=temp;
+  104 : }
+  105 : DtND=vDtND;
+  106 : matrix<complex> DD;
+  107 : complex[int] diagofDD(nbfpro);
+  108 : for (int n =0;n<nbfpro;n++)
+  109 : {
+  110 :         if (n==0)
+  111 :         diagofDD[n] = -1i*w;
+  112 :         else
+  113 :         diagofDD[n] = sqrt((n*pi)^2-w^2);
+  114 : }
+  115 : DD = [diagofDD];
+  116 : matrix<complex> EFLD ;
+  117 : EFLD = DtND*DD;
+  118 : EFLD= EFLD*DtND';
+  119 : // FIN DE LA PARTIE A NE PAS MODIFIER
+  120 :
+  121 : /***************************************
+  122 : On passe à la formulation variationnelle
+  123 : ****************************************/
+  124 : Vh<complex> u,v,ui=uifonc;
+  125 : matrix<complex> A,B,C;
+  126 : complex[int] G(Vh.ndof);
+  127 : cout << "ndof " << Vh.ndof << endl;
+  128 : varf aForme(u,v) = int2d(Th)(dx(u)*dx(v)+dy(u)*dy(v))-int2d(Th)(w^2*u*v);
+  129 : varf gForme(u,v) =  int1d(Th,4)(-2*1i*w*uifonc*v);
+  130 : A= aForme(Vh,Vh);
+  131 : C= A+EFLG+EFLD; //on rajoute les Dirichlet-to-Neumann
+  132 : set(C,solver=UMFPACK);
+  133 : G= gForme(0,Vh);
+  134 : u[]=C^-1*G;
+  135 : complex R = int1d(Th,4)((u-uifonc)*uifonc)/2;
+  136 : complex T = int1d(Th,2)(u*uifoncConj)/2;
+  137 : cout << "*************** R = " << R << " T = " << T << endl;
+  138 : cout << "Conservation de l'energie : " << abs(R)^2 + abs(T)^2 << endl;
+  139 : Rfile << R << endl;
+  140 : Vh uReel=real(u);
+  141 : Vh uImag=imag(u);
+  142 : plot(uReel,fill=1,dim=2,nbiso=40,value=1,wait=0,cmm="Re u, |R| = "+abs(R)+", T = "+T+", Phase de T : "+atan(imag(T)/real(T)));
+  143 :
+  144 :
+  145 :
+  146 : /***************************************
+  147 : Affichage de la solution en régime harmonique en temps
+  148 : ****************************************/
+  149 :
+  150 : /*
+  151 : real T=2*pi/w; //periode
+  152 : int nbIter=200;
+  153 : Vh uTemp;
+  154 : Vh uAbs=abs(u); //module
+  155 : real[int] viso(40); //5 lignes pour fixer l'echelle
+  156 : real ValMin=-uAbs[].max;
+  157 : real ValMax=uAbs[].max;
+  158 : for (int i=0;i<viso.n;i++)
+  159 : {viso[i]=ValMin+(ValMax-ValMin)*i/(viso.n-1);}
+  160 : for(real t=0;t<3*T;t+=3*T/nbIter)
+  161 : {uTemp=uReel*cos(w*t)+uImag*sin(w*t);
+  162 : plot(uTemp,fill=1,dim=2,viso=viso(0:viso.n-1),value=1,wait=0,cmm="Re (u(x,y)exp(-iwt))");}
+  163 : */
+  164 : /***************************************
+  165 : Portion de code pour ecrire dans un fichier
+  166 : ****************************************/
+  167 : complex [int] MesValeurs(3);
+  168 : ofstream f1("MonFichier.txt");
+  169 : int nold=f1.precision(15); // pour regler la precision
+  170 : for (int i=0;i<=1;i++)
+  171 : {f1 << MesValeurs(i) << endl;};
+  172 :
+  173 :
+  174 :  sizestack + 1024 =3964  ( 2940 )
+ 
+  --  mesh:  Nb of Triangles =  21904, Nb of Vertices 11248
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+  -- Raw Matrix    nxm  =15x15 nb  none zero coef. 15
+ndof 44400
+*************** R = (-3.8451e-06,-3.52676e-06) T = (0.990492,0.137572)
+Conservation de l'energie : 1
+times: compile 0.182s, execution 1.311s,  mpirank:0
+ ######## We forget of deleting   24486 Nb pointer,   0Bytes  ,  mpirank 0, memory leak =0
+ CodeAlloc : nb ptr  4533,  size :532864 mpirank: 0
+Ok: Normal End
+ try getConsole C:\Users\clemr\OneDrive\Bureau\travail\2A\MODAL\Obstacle.edp

@@ -1,0 +1,156 @@
+load "iovtk";
+int[int] fforder=[2];
+
+
+
+real w=0.8*pi; // frequence de travail
+real l=pi/w, ell=1, h=1, d = 4; //parametres de la geometrie
+
+int m=30; //nombre de mailles par element de longueur
+int maxSteps = 30; // Nombre maximal d'étapes dans la boucle
+real mu = 1e-4;
+
+real [int] tau(2);
+real [int] tauPrec(2);// tau au tour précédent
+tau(0) = 0;
+tau(1) = 0;
+
+func real sqrdist(real [int] tau1, real [int] tau2){ // Distance euclidienne au carré dans R2
+	return ((tau1(0)-tau2(0))^2 + (tau1(1)-tau2(1))^2);
+}
+
+border a(t=-d,d){x =t; y = -1; label = 1;} //bord du bas
+border b(t=0,1){x =d; y = -1+t; label = 2;} //DROIT : 2
+border hd(t=d,l/2){x =t; y = 0; label = 3;} //bord du haut 3
+border hg(t=-l/2,-d){x =t; y = 0; label = 3;} //bord du haut 3
+border i(t=0,-1){x =-d; y = t; label = 4;} //GAUCHE : 4
+
+
+
+
+real L = 1.34; // L optimal trouvé 'à la main'
+
+border chemG(t=L,0){x=-l/2;y=t;label=3;}
+border chemH(t=-l/2,l/2){x =-t; y = L; label = 3;}
+border chemD(t=0,L){x=l/2;y=t;label=3;}
+
+// border Cercle(t=0,2*pi){ x=0.3*cos(t); y=0.5+0.3*sin(t); label = 1;}
+//plot(a(2*d*m)+b(m)+hd(m*(d-L))+chemD(m*L)+chemH(m*l)+chemG(m*L)+hg(m*(d-L))+i(m), wait = true);
+mesh Th=buildmesh(a(2*d*m)+b(m)+hd(m*(d-l/2))+chemD(m*L)+chemH(m*l)+chemG(m*L)+hg(m*(d-l/2))+i(m));
+//plot(Th,wait=1,cmm="Appuyer sur Enter pour poursuivre");
+
+fespace Vh(Th,P2); // espace elements finis (ici fonctions continues P2 sur chaque triangle)s
+
+func  uifonc=exp(1i*w*x);
+func  uifoncConj=exp(-1i*w*x);
+
+//DEBUT DE LA PARTIE A NE PAS MODIFIER
+/*****************************************
+Construction des Dirichlet-to-Neumann
+******************************************/
+int nbfpro = 15; //troncature dans le Dirichlet-to-Neumann
+//fonction de la base de fourier
+func complex expin(real x1,real x2, int n)
+{
+	if (n==0)
+	return 1.;
+	else
+	return (sqrt(2.)*cos(n*pi*x2));	
+}
+/******************************************************
+Dirichlet-to-Neumann à gauche
+/*****************************************************/
+complex[int,int] vDtNG( Vh.ndof, nbfpro);
+matrix<complex> DtNG;
+for (int n=0;n<nbfpro;n++)
+{
+	func f= expin(x,y,n);
+	varf FiniFourier(u,v) = int1d(Th,4)(v*f); // integration sur le bord gauche
+	complex[int] temp = FiniFourier(0,Vh);
+	vDtNG(:,n)=temp;
+}
+DtNG=vDtNG;
+// Construction de la matrice diagonale pour construire les EFL
+matrix<complex> DG;
+complex[int] diagofDG(nbfpro);
+for (int n =0;n<nbfpro;n++)
+{
+	if (n==0)
+	diagofDG[n] = -1i*w; // moins car dans la formu. varia., il y a un moins
+	else
+	diagofDG[n] = sqrt((n*pi)^2-w^2); // moins car dans la formu. varia., il y a un moins
+}
+DG = [diagofDG];
+// Assemblage final et réorganisation pour intégration dans la formulation variationnelle
+matrix<complex> EFLG ;
+EFLG = DtNG*DG;
+EFLG= EFLG*DtNG';
+
+/******************************************************
+Dirichlet-to-Neumann à droite
+/*****************************************************/
+complex[int,int] vDtND( Vh.ndof, nbfpro);
+matrix<complex> DtND;
+for (int n=0;n<nbfpro;n++)
+{
+	func f= expin(x,y,n);
+	varf FiniFourier(u,v) = int1d(Th,2)(v*f); // integration sur le bord droit
+	complex[int] temp = FiniFourier(0,Vh);
+	vDtND(:,n)=temp;
+}
+DtND=vDtND;
+matrix<complex> DD;
+complex[int] diagofDD(nbfpro);
+for (int n =0;n<nbfpro;n++)
+{
+	if (n==0)
+	diagofDD[n] = -1i*w; 
+	else
+	diagofDD[n] = sqrt((n*pi)^2-w^2); 
+}
+DD = [diagofDD];
+matrix<complex> EFLD ;
+EFLD = DtND*DD;
+EFLD= EFLD*DtND';
+// FIN DE LA PARTIE A NE PAS MODIFIER
+
+/***************************************
+On passe à la formulation variationnelle
+****************************************/
+Vh<complex> u,v,ui=uifonc;
+matrix<complex> A,B,C;
+complex[int] G(Vh.ndof);
+cout << "ndof " << Vh.ndof << endl;
+varf aForme(u,v) = int2d(Th)(dx(u)*dx(v)+dy(u)*dy(v))-int2d(Th)(w^2*u*v);
+varf gForme(u,v) =  int1d(Th,4)(-2*1i*w*uifonc*v);
+A= aForme(Vh,Vh);
+C= A+EFLG+EFLD; //on rajoute les Dirichlet-to-Neumann
+set(C,solver=UMFPACK);
+G= gForme(0,Vh);
+u[]=C^-1*G;
+complex R = int1d(Th,4)((u-uifonc)*uifonc);
+complex T = int1d(Th,2)(u*uifoncConj);
+
+Vh uReel=real(u);
+Vh uImag=imag(u);
+plot(uReel,fill=1,dim=2,nbiso=40,value=1,wait=0,cmm="Re u, |R| = "+abs(R)+", T = "+T+", Phase de T : "+atan(imag(T)/real(T)));
+
+Vh uiReel = real(ui);
+Vh uiImag = imag(ui);
+
+
+// Génération de vidéo
+Vh solApprochTempo;
+Vh solApprochTempoInc;
+real Tper=2*pi/w;
+int nbIter=25;
+int j=0;
+int numImage;
+for(real t=0;t<Tper;t+=Tper/nbIter){
+	numImage=1000000+j;
+	solApprochTempo=uReel*cos(w*t)+uImag*sin(w*t);   
+	solApprochTempoInc=uiReel*cos(w*t)+uiImag*sin(w*t);
+	savevtk("dataVTK/image"+numImage+".vtk",Th,solApprochTempo,order=fforder,dataname="solution");
+	savevtk("dataVTKinc/image"+numImage+".vtk",Th,solApprochTempoInc,order=fforder,dataname="solution");
+	j++;
+}
